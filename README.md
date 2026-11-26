@@ -242,7 +242,28 @@ leandock analyze
 
 # Or point to a specific file and preview Redis ephemeral cache mode
 leandock analyze -f docker-compose.prod.yml --ephemeral-cache
+
+# Machine-readable output for CI scripts and dashboards
+leandock analyze --format json > analyze.json
 ```
+
+`--format json` prints a single JSON document (abridged):
+
+```json
+{
+  "host": { "os": "linux", "virtualization": "lxc", "is_root": false, "...": "..." },
+  "detected_tier": 3,
+  "tiers": [{ "tier": 1, "capability": "Compose & DB Auto-Tuner + Log Cap + Cleanup", "status": "full", "details": "..." }],
+  "skipped_tiers": [{ "tier": 4, "capability": "Linux Kernel (zram, KSM, Quadlet)", "status": "skipped", "details": "Virtualization `lxc` shares host kernel ..." }],
+  "budget": { "effective_ram_mb": 2048, "os_reserve_mb": 384, "estimated_savings_mb": 512, "...": "..." },
+  "services": [{ "name": "db", "role": "database", "ignored": false, "mem_limit_mb": 512, "mem_reservation_mb": 256, "notes": ["..."], "...": "..." }],
+  "host_preview": { "applied": [], "skipped": ["..."], "warnings": [] },
+  "warnings": [],
+  "errors": []
+}
+```
+
+`detected_tier` is the highest tier N for which tiers 1..N are all active (`full` or `partial`); `skipped_tiers` lists auto-skipped tiers with the reason in `details`. Service rows never include command lines or environment values, which can hold credentials: `tunes_command` says whether LeanDock tunes the command, and `extra_env_keys` lists only the names of injected variables. `errors` lists anything that could not be collected, such as the host tuning preview.
 
 You can also preview the full `up` pipeline (including Linux kernel `zram`/`KSM` eligibility) with:
 
@@ -455,8 +476,32 @@ services:
 **Live Stack Telemetry:**
 ```bash
 leandock status
+
+# Machine-readable JSON
+leandock status --format json
 ```
 Displays per-container state, CPU %, RAM usage, Wake-on-Request state (`Always-On`, `Active`, or `Sleeping (0 MB)`), plus live Linux `zram` compression ratio and `KSM` deduplicated RAM.
+
+With `--format json`:
+
+```json
+{
+  "containers": [
+    {
+      "name": "api", "state": "running", "idle_mode": "Wake Proxy: Active",
+      "cpu_percent": 1.25, "mem_used_mb": 48.0, "mem_limit_mb": 256.0,
+      "cpu_text": "1.25%", "mem_text": "48MiB / 256MiB"
+    }
+  ],
+  "kernel": {
+    "zram_active": true, "zram_orig_data_mb": 300.0, "zram_compr_data_mb": 100.0, "zram_ratio": 3.0,
+    "ksm_active": true, "ksm_pages_sharing": 2560, "ksm_saved_mb": 10.0
+  },
+  "errors": []
+}
+```
+
+CPU and memory are numbers (MiB), with the runtime's own text kept in `cpu_text` and `mem_text`; a number is `null` if that text could not be parsed. If the container runtime cannot be queried, `containers` is empty and `errors` says why.
 
 **Reproducible Before vs. After Benchmarks:**
 ```bash
@@ -492,12 +537,12 @@ See [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md) for methodology details.
 
 | Command | Flags & Defaults | Description |
 |---|---|---|
-| `leandock analyze` | `-f, --file <PATH>`, `--ephemeral-cache` | Strictly zero-touch dry run showing hardware/OS tier, ignored services, proposed DB/memory flags, and estimated RAM savings. |
+| `leandock analyze` | `-f, --file <PATH>`, `--ephemeral-cache`, `--format text\|json` (default `text`) | Strictly zero-touch dry run showing hardware/OS tier, ignored services, proposed DB/memory flags, and estimated RAM savings. |
 | `leandock up` | `-f <PATH>`, `--engine docker\|podman`, `--no-kernel`, `--no-cleanup`, `--minify`, `--extract-static`, `--ephemeral-cache`, `--auto-rollback <bool>` (default `true`), `--health-window <SECS>` (default `10`), `--dry-run` | Generates `.leandock/compose.override.yml`, applies supported host/kernel tuning, deploys stack, verifies health with auto-rollback, and prunes dangling layers/cache. |
 | `leandock down` | `-f <PATH>`, `--engine docker\|podman` | Stops and removes the Compose stack cleanly. |
 | `leandock proxy` | `--port-map <svc:listen:target[:timeout]>`, `--install-service` | Runs the cross-platform Hyper v1 Wake-on-Request reverse proxy & static server (or installs `leandock-proxy.service` on Linux). |
 | `leandock quadlet` | `-f <PATH>`, `-o, --output <DIR>` (default `.leandock/quadlet`) | Exports daemonless systemd Quadlet `.container` units for Linux Podman. |
-| `leandock status` | - | Live container RAM/CPU, `zram` compression stats, `KSM` deduplicated RAM, and Wake-on-Request Active/Sleeping states. |
+| `leandock status` | `--format text\|json` (default `text`) | Live container RAM/CPU, `zram` compression stats, `KSM` deduplicated RAM, and Wake-on-Request Active/Sleeping states. |
 | `leandock bench` | `-f <PATH>`, `--format table\|markdown\|json` (default `table`), `--settle-secs <SECS>` (default `8`) | Captures reproducible Before vs. After resource metrics (RAM, Swap/zram, Disk, Processes, Startup ms). |
 | `leandock revert` | `--all` | Restores backed-up host configs, tears down live zram/KSM/proxy unit if applied, reloads services, and removes `.leandock/`. |
 | `leandock doctor` | - | Full cross-platform environment diagnostic (OS tier, virtualization, kernel/systemd, sockets, helpers, permissions). |

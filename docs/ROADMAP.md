@@ -21,7 +21,7 @@ are curated to be self-contained.
 | Item | Why | Status |
 |---|---|---|
 | `leandock doctor --report` produces a redacted JSON bundle for bug reports | Support quality and faster triage | Proposed |
-| `--format json` for `analyze` and `status` | Scripting and dashboards | Proposed |
+| `--format json` for `analyze` and `status` | Scripting and dashboards | Done (unreleased) |
 | Windows ARM64 release archives and npm package | Growing ARM laptops | Proposed |
 | Installer linting (shellcheck, PowerShell analyzer) in CI | Installers are the first thing users run | Proposed |
 | More worked examples with measured numbers on 1–2 GB VPS | Users want proof, not claims | Proposed |
