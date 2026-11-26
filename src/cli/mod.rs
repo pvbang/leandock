@@ -22,8 +22,9 @@ use crate::prerun::write_override_file;
 use crate::profiler::{discover_compose_file, ComposeDriver, ContainerRuntimeKind, HostProfile};
 use crate::proxy::start_proxy_daemon;
 use crate::report::{
-    capture_benchmark_snapshot, collect_live_container_stats, format_benchmark_report,
-    print_analyze_report, print_doctor_report, print_status_report, OutputFormat,
+    capture_benchmark_snapshot, collect_live_container_stats, format_analyze_json_report,
+    format_benchmark_report, format_status_json_report, print_analyze_report, print_doctor_report,
+    print_status_report, OutputFormat,
 };
 
 #[derive(Debug, Parser)]
@@ -51,6 +52,12 @@ pub enum BenchFormatArg {
     Json,
 }
 
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum ReportFormatArg {
+    Table,
+    Json,
+}
+
 #[derive(Debug, Subcommand)]
 pub enum Commands {
     /// Zero-touch dry-run: inspect hardware tier, ignored services, and proposed optimizations.
@@ -61,6 +68,9 @@ pub enum Commands {
         /// Preview Redis/Valkey ephemeral cache mode (`allkeys-lru` + `--save ""`).
         #[arg(long)]
         ephemeral_cache: bool,
+        /// Output format: table or json.
+        #[arg(long, value_enum, default_value_t = ReportFormatArg::Table)]
+        format: ReportFormatArg,
     },
 
     /// Generate non-destructive `.leandock/compose.override.yml`, apply safe optimizations, and start stack.
@@ -128,7 +138,11 @@ pub enum Commands {
     },
 
     /// Show live container RAM/CPU, zram compression, KSM savings, and Wake-on-Request states.
-    Status,
+    Status {
+        /// Output format: table or json.
+        #[arg(long, value_enum, default_value_t = ReportFormatArg::Table)]
+        format: ReportFormatArg,
+    },
 
     /// Capture reproducible Before vs. After resource metrics (RAM, Swap/zram, Disk, Processes, Startup).
     Bench {
@@ -163,7 +177,8 @@ pub async fn run() -> Result<()> {
         Commands::Analyze {
             file,
             ephemeral_cache,
-        } => cmd_analyze(&cwd, file.as_deref(), ephemeral_cache),
+            format,
+        } => cmd_analyze(&cwd, file.as_deref(), ephemeral_cache, format),
         Commands::Up {
             file,
             engine,
@@ -206,7 +221,7 @@ pub async fn run() -> Result<()> {
             start_proxy_daemon(&profile, &cwd, &port_map).await
         }
         Commands::Quadlet { file, output } => cmd_quadlet(&cwd, file.as_deref(), &output),
-        Commands::Status => cmd_status(),
+        Commands::Status { format } => cmd_status(format),
         Commands::Bench {
             file,
             format,
@@ -221,7 +236,12 @@ pub async fn run() -> Result<()> {
     }
 }
 
-fn cmd_analyze(cwd: &Path, file: Option<&Path>, ephemeral_cache: bool) -> Result<()> {
+fn cmd_analyze(
+    cwd: &Path,
+    file: Option<&Path>,
+    ephemeral_cache: bool,
+    format: ReportFormatArg,
+) -> Result<()> {
     let profile = HostProfile::detect();
     let compose_path = discover_compose_file(file, cwd)?;
     let compose = ParsedCompose::from_file(&compose_path)?;
@@ -242,7 +262,13 @@ fn cmd_analyze(cwd: &Path, file: Option<&Path>, ephemeral_cache: bool) -> Result
         .ok()
         .and_then(|mut s| apply_host_tuning(&profile, cwd, &mut s, true).ok());
 
-    print_analyze_report(&profile, &plan, host_preview.as_ref());
+    match format {
+        ReportFormatArg::Table => print_analyze_report(&profile, &plan, host_preview.as_ref()),
+        ReportFormatArg::Json => println!(
+            "{}",
+            format_analyze_json_report(&profile, &plan, host_preview.as_ref())?
+        ),
+    }
     Ok(())
 }
 
@@ -547,7 +573,7 @@ fn cmd_quadlet(cwd: &Path, file: Option<&Path>, output: &Path) -> Result<()> {
     }
 }
 
-fn cmd_status() -> Result<()> {
+fn cmd_status(format: ReportFormatArg) -> Result<()> {
     let profile = HostProfile::detect();
     let runtime_bin = match profile.runtime.active_runtime {
         ContainerRuntimeKind::Podman => "podman",
@@ -555,7 +581,12 @@ fn cmd_status() -> Result<()> {
     };
     let containers = collect_live_container_stats(runtime_bin);
     let kernel_stats = read_kernel_memory_stats();
-    print_status_report(&containers, &kernel_stats);
+    match format {
+        ReportFormatArg::Table => print_status_report(&containers, &kernel_stats),
+        ReportFormatArg::Json => {
+            println!("{}", format_status_json_report(&containers, &kernel_stats)?)
+        }
+    }
     Ok(())
 }
 

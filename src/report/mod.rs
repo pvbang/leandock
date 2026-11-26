@@ -569,3 +569,31 @@ fn support_cell(support: CapabilitySupport) -> Cell {
         CapabilitySupport::Skipped => Cell::new("Auto-Skipped").fg(Color::DarkGrey),
     }
 }
+
+// JSON output for `leandock analyze`.
+pub fn format_analyze_json_report(
+    profile: &HostProfile,
+    plan: &OptimizationPlan,
+    host_preview: Option<&HostTuningReport>,
+) -> crate::error::Result<String> {
+    let report = serde_json::json!({
+        "host": profile,
+        "optimization_plan": plan,
+        "host_preview": host_preview,
+    });
+
+    Ok(serde_json::to_string_pretty(&report)?)
+}
+
+// JSON output for `leandock status`.
+pub fn format_status_json_report(
+    containers: &[LiveContainerStat],
+    kernel_stats: &KernelMemoryStats,
+) -> crate::error::Result<String> {
+    let report = serde_json::json!({
+        "containers": containers,
+        "kernel_memory": kernel_stats,
+    });
+
+    Ok(serde_json::to_string_pretty(&report)?)
+}
