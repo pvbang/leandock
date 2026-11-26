@@ -97,6 +97,7 @@ LeanDock is built on honest, verifiable systems engineering - zero hype and zero
 ## When to Use (and When NOT to Use) LeanDock
 
 ### Ideal Use Cases
+
 - **Full-Stack Web / SaaS / MVP Projects on Small VPS (1 GB – 8 GB RAM):** Frontend + Backend API (FastAPI, Node, Go, Laravel, Rails) + 1–2 Databases (MongoDB, PostgreSQL, Redis, MySQL, Qdrant).
 - **Multi-Project VPS Consolidation (Side Projects, Staging, Demos, Portfolios):** Pack 5–10 projects onto a single 4 GB VPS by combining DB memory caps with Wake-on-Request scale-to-zero.
 - **AI, Automation, Bot & Internal Tooling Stacks:** On-demand heavy workers (OCR, PDF rendering, media processing, scrapers) or vector databases that sit idle most of the day.
@@ -104,6 +105,7 @@ LeanDock is built on honest, verifiable systems engineering - zero hype and zero
 - **Local Development Laptops (Windows WSL2 / macOS):** Bound local DB caches, optimize `.wslconfig`, and auto-reclaim build cache bloat.
 
 ### When NOT to Use LeanDock
+
 - **Large Multi-Node Orchestrators (Kubernetes, Docker Swarm, Nomad):** Those platforms already manage resource scheduling, CNI networking, and autoscaling.
 - **Ultra-Low-Latency / High-Throughput Production Systems:** Real-time trading engines, real-time game servers, or heavily saturated primary databases sustaining thousands of writes/sec should rely on manual DBA benchmarking rather than automatic cache caps or Wake-on-Request cold starts.
 - **Legacy Pure Windows Native Containers** (`.NET Framework` Windows-kernel containers).
@@ -247,6 +249,25 @@ leandock analyze -f docker-compose.prod.yml --ephemeral-cache
 leandock analyze --format json > analyze.json
 ```
 
+**Example JSON structure (abbreviated):**
+
+```json
+{
+  "host": {
+    "hardware": {},
+    "platform": {},
+    "runtime": {}
+  },
+  "optimization_plan": {
+    "effective_ram_mb": 4096,
+    "allocatable_ram_mb": 3482,
+    "services": [],
+    "warnings": []
+  },
+  "host_preview": {}
+}
+```
+
 You can also preview the full `up` pipeline (including Linux kernel `zram`/`KSM` eligibility) with:
 
 ```bash
@@ -272,9 +293,11 @@ leandock down
 ```
 
 Under the hood, LeanDock writes `.leandock/compose.override.yml` and runs:
+
 ```bash
 docker compose -f <your-original-compose.yml> -f .leandock/compose.override.yml up -d
 ```
+
 Your original `docker-compose.yml`, comments, and `${VAR:-default}` expressions are never modified.
 
 ---
@@ -369,6 +392,7 @@ leandock proxy --port-map staging-app:8081:13000:10m
 leandock proxy --install-service
 systemctl --user daemon-reload && systemctl --user enable --now leandock-proxy.service
 ```
+
 *(Backed up transactionally - `leandock revert` stops and removes the service automatically.)*
 
 See [`examples/wake-on-request-demo/docker-compose.yml`](examples/wake-on-request-demo/docker-compose.yml) for a runnable example.
@@ -443,6 +467,7 @@ services:
     labels:
       leandock.ignore: "true"
 ```
+
 ```yaml
 services:
   legacy-db:
@@ -462,6 +487,35 @@ leandock status
 # Machine-readable JSON
 leandock status --format json > status.json
 ```
+
+**Example JSON structure (abbreviated):**
+
+```json
+{
+  "containers": [
+    {
+      "name": "api",
+      "state": "running",
+      "cpu_percent": "2.5%",
+      "cpu_percent_value": 2.5,
+      "mem_usage": "128MiB / 1GiB",
+      "memory_usage_bytes": 134217728,
+      "memory_limit_bytes": 1073741824,
+      "idle_mode": "Active"
+    }
+  ],
+  "kernel_memory": {
+    "zram_active": false,
+    "zram_orig_data_mb": 0.0,
+    "zram_compr_data_mb": 0.0,
+    "zram_ratio": 0.0,
+    "ksm_active": false,
+    "ksm_pages_sharing": 0,
+    "ksm_saved_mb": 0.0
+  }
+}
+```
+
 Displays per-container state, CPU %, RAM usage, Wake-on-Request state (`Always-On`, `Active`, or `Sleeping (0 MB)`), plus live Linux `zram` compression ratio and `KSM` deduplicated RAM.
 
 **Reproducible Before vs. After Benchmarks:**
