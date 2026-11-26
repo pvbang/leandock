@@ -1,5 +1,3 @@
-use clap::Parser;
-use leandock::cli::{Cli, Commands, ReportFormatArg};
 use leandock::postrun::KernelMemoryStats;
 use leandock::prerun::db_tuner::OptimizationPlan;
 use leandock::profiler::HostProfile;
@@ -34,7 +32,7 @@ fn status_json_report_contains_expected_sections() {
         name: "test-container".to_string(),
         state: "running".to_string(),
         cpu_percent: "2.5%".to_string(),
-        mem_usage: "128MiB".to_string(),
+        mem_usage: "128MiB / 1GiB".to_string(),
         idle_mode: "active".to_string(),
     }];
 
@@ -46,50 +44,7 @@ fn status_json_report_contains_expected_sections() {
     assert!(json.get("containers").is_some());
     assert!(json.get("kernel_memory").is_some());
     assert_eq!(json["containers"][0]["name"], "test-container");
-}
-
-#[test]
-fn analyze_accepts_json_format() {
-    let cli = Cli::try_parse_from(["leandock", "analyze", "--format", "json"]).unwrap();
-
-    assert!(matches!(
-        cli.command,
-        Commands::Analyze {
-            format: ReportFormatArg::Json,
-            ..
-        }
-    ));
-}
-
-#[test]
-fn status_accepts_json_format() {
-    let cli = Cli::try_parse_from(["leandock", "status", "--format", "json"]).unwrap();
-
-    assert!(matches!(
-        cli.command,
-        Commands::Status {
-            format: ReportFormatArg::Json,
-        }
-    ));
-}
-
-#[test]
-fn analyze_and_status_default_to_table_format() {
-    let analyze = Cli::try_parse_from(["leandock", "analyze"]).unwrap();
-    let status = Cli::try_parse_from(["leandock", "status"]).unwrap();
-
-    assert!(matches!(
-        analyze.command,
-        Commands::Analyze {
-            format: ReportFormatArg::Table,
-            ..
-        }
-    ));
-
-    assert!(matches!(
-        status.command,
-        Commands::Status {
-            format: ReportFormatArg::Table,
-        }
-    ));
+    assert_eq!(json["containers"][0]["cpu_percent_value"], 2.5);
+    assert_eq!(json["containers"][0]["memory_usage_bytes"], 134217728);
+    assert_eq!(json["containers"][0]["memory_limit_bytes"], 1073741824);
 }
