@@ -181,9 +181,12 @@ pub fn print_analyze_report(
     }
 }
 
-/// Prints the live `leandock status` dashboard.
-pub fn print_status_report(containers: &[LiveContainerStat], kernel_stats: &KernelMemoryStats) {
-    println!("\n{}", "LeanDock Live Stack Status".bold().cyan());
+/// Formats the live `leandock status` dashboard as text.
+pub fn format_status_report(
+    containers: &[LiveContainerStat],
+    kernel_stats: &KernelMemoryStats,
+) -> String {
+    let mut output = format!("\n{}\n", "LeanDock Live Stack Status".bold().cyan());
 
     let mut table = Table::new();
     table.load_preset(UTF8_FULL);
@@ -214,28 +217,36 @@ pub fn print_status_report(containers: &[LiveContainerStat], kernel_stats: &Kern
             ]);
         }
     }
-    println!("{table}");
 
-    println!("\n{}", "Kernel Memory Optimizations".bold());
+    output.push_str(&table.to_string());
+    output.push_str(&format!("\n\n{}\n", "Kernel Memory Optimizations".bold()));
+
     if kernel_stats.zram_active {
-        println!(
-            "  zram (zstd): Active · Orig: {:.1} MB -> Compressed: {:.1} MB (Ratio: {:.2}x)",
+        output.push_str(&format!(
+            "  zram (zstd): Active · Orig: {:.1} MB -> Compressed: {:.1} MB (Ratio: {:.2}x)\n",
             kernel_stats.zram_orig_data_mb,
             kernel_stats.zram_compr_data_mb,
             kernel_stats.zram_ratio
-        );
+        ));
     } else {
-        println!("  zram: Inactive or skipped on this platform");
+        output.push_str("  zram: Inactive or skipped on this platform\n");
     }
 
     if kernel_stats.ksm_active {
-        println!(
-            "  KSM: Active · Shared pages: {} (~{:.1} MB RAM deduplicated)",
+        output.push_str(&format!(
+            "  KSM: Active · Shared pages: {} (~{:.1} MB RAM deduplicated)\n",
             kernel_stats.ksm_pages_sharing, kernel_stats.ksm_saved_mb
-        );
+        ));
     } else {
-        println!("  KSM: Inactive or skipped on this platform");
+        output.push_str("  KSM: Inactive or skipped on this platform\n");
     }
+
+    output
+}
+
+/// Prints the live `leandock status` dashboard.
+pub fn print_status_report(containers: &[LiveContainerStat], kernel_stats: &KernelMemoryStats) {
+    println!("{}", format_status_report(containers, kernel_stats));
 }
 
 /// Prints the `leandock doctor` full diagnostic report.
