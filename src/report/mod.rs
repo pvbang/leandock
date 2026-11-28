@@ -181,9 +181,12 @@ pub fn print_analyze_report(
     }
 }
 
-/// Prints the live `leandock status` dashboard.
-pub fn print_status_report(containers: &[LiveContainerStat], kernel_stats: &KernelMemoryStats) {
-    println!("\n{}", "LeanDock Live Stack Status".bold().cyan());
+/// Formats the live `leandock status` dashboard as text.
+pub fn format_status_report(
+    containers: &[LiveContainerStat],
+    kernel_stats: &KernelMemoryStats,
+) -> String {
+    let mut output = format!("\n{}\n", "LeanDock Live Stack Status".bold().cyan());
 
     let mut table = Table::new();
     table.load_preset(UTF8_FULL);
@@ -214,28 +217,36 @@ pub fn print_status_report(containers: &[LiveContainerStat], kernel_stats: &Kern
             ]);
         }
     }
-    println!("{table}");
 
-    println!("\n{}", "Kernel Memory Optimizations".bold());
+    output.push_str(&table.to_string());
+    output.push_str(&format!("\n\n{}\n", "Kernel Memory Optimizations".bold()));
+
     if kernel_stats.zram_active {
-        println!(
-            "  zram (zstd): Active · Orig: {:.1} MB -> Compressed: {:.1} MB (Ratio: {:.2}x)",
+        output.push_str(&format!(
+            "  zram (zstd): Active · Orig: {:.1} MB -> Compressed: {:.1} MB (Ratio: {:.2}x)\n",
             kernel_stats.zram_orig_data_mb,
             kernel_stats.zram_compr_data_mb,
             kernel_stats.zram_ratio
-        );
+        ));
     } else {
-        println!("  zram: Inactive or skipped on this platform");
+        output.push_str("  zram: Inactive or skipped on this platform\n");
     }
 
     if kernel_stats.ksm_active {
-        println!(
-            "  KSM: Active · Shared pages: {} (~{:.1} MB RAM deduplicated)",
+        output.push_str(&format!(
+            "  KSM: Active · Shared pages: {} (~{:.1} MB RAM deduplicated)\n",
             kernel_stats.ksm_pages_sharing, kernel_stats.ksm_saved_mb
-        );
+        ));
     } else {
-        println!("  KSM: Inactive or skipped on this platform");
+        output.push_str("  KSM: Inactive or skipped on this platform\n");
     }
+
+    output
+}
+
+/// Prints the live `leandock status` dashboard.
+pub fn print_status_report(containers: &[LiveContainerStat], kernel_stats: &KernelMemoryStats) {
+    println!("{}", format_status_report(containers, kernel_stats));
 }
 
 /// Prints the `leandock doctor` full diagnostic report.
@@ -496,70 +507,95 @@ pub fn format_benchmark_report(
 }
 
 /// Queries live container stats via `docker stats --no-stream` / `podman stats --no-stream`.
+fn run_runtime_command(
+    runtime_bin: &str,
+    args: &[&str],
+) -> crate::error::Result<std::process::Output> {
+    let output = Command::new(runtime_bin).args(args).output()?;
+
+    if !output.status.success() {
+        return Err(crate::error::LeanDockError::CommandFailed {
+            cmd: format!("{} {}", runtime_bin, args.join(" ")),
+            code: output.status.code(),
+            stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        });
+    }
+
+    Ok(output)
+}
+
+/// Queries live container stats via Docker or Podman.
+///
+/// Preserves the original infallible public API.
 pub fn collect_live_container_stats(runtime_bin: &str) -> Vec<LiveContainerStat> {
-    let mut stats_map = std::collections::HashMap::new();
-    if let Ok(out) = Command::new(runtime_bin)
-        .args([
+    try_collect_live_container_stats(runtime_bin).unwrap_or_default()
+}
+/// Queries live container stats via Docker or Podman.
+pub fn try_collect_live_container_stats(
+    runtime_bin: &str,
+) -> crate::error::Result<Vec<LiveContainerStat>> {
+    let stats = run_runtime_command(
+        runtime_bin,
+        &[
             "stats",
             "--no-stream",
             "--format",
             "{{.Name}}|{{.CPUPerc}}|{{.MemUsage}}",
-        ])
-        .output()
-    {
-        if out.status.success() {
-            for line in String::from_utf8_lossy(&out.stdout).lines() {
-                let parts: Vec<&str> = line.split('|').collect();
-                if parts.len() >= 3 {
-                    stats_map.insert(
-                        parts[0].trim().to_string(),
-                        (parts[1].trim().to_string(), parts[2].trim().to_string()),
-                    );
-                }
-            }
+        ],
+    )?;
+
+    let mut stats_map = std::collections::HashMap::new();
+
+    for line in String::from_utf8_lossy(&stats.stdout).lines() {
+        let parts: Vec<&str> = line.split('|').collect();
+        if parts.len() >= 3 {
+            stats_map.insert(
+                parts[0].trim().to_string(),
+                (parts[1].trim().to_string(), parts[2].trim().to_string()),
+            );
         }
     }
+
+    let output = run_runtime_command(
+        runtime_bin,
+        &["ps", "-a", "--format", "{{.Names}}|{{.State}}|{{.Labels}}"],
+    )?;
 
     let mut rows = Vec::new();
-    if let Ok(out) = Command::new(runtime_bin)
-        .args(["ps", "-a", "--format", "{{.Names}}|{{.State}}|{{.Labels}}"])
-        .output()
-    {
-        if out.status.success() {
-            for line in String::from_utf8_lossy(&out.stdout).lines() {
-                let parts: Vec<&str> = line.splitn(3, '|').collect();
-                if parts.len() < 3 {
-                    continue;
-                }
-                let name = parts[0].trim().to_string();
-                let state = parts[1].trim().to_string();
-                let labels = parts[2];
-                let idle_enabled = labels.contains("leandock.idle.enable=true");
-                let idle_mode = if !idle_enabled {
-                    "Always-On".to_string()
-                } else if state.eq_ignore_ascii_case("running") {
-                    "Wake Proxy: Active".to_string()
-                } else {
-                    "Wake Proxy: Sleeping (0 MB)".to_string()
-                };
 
-                let (cpu, mem) = stats_map
-                    .get(&name)
-                    .cloned()
-                    .unwrap_or_else(|| ("0.00%".to_string(), "0B / 0B".to_string()));
-
-                rows.push(LiveContainerStat {
-                    name,
-                    state,
-                    cpu_percent: cpu,
-                    mem_usage: mem,
-                    idle_mode,
-                });
-            }
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        let parts: Vec<&str> = line.splitn(3, '|').collect();
+        if parts.len() < 3 {
+            continue;
         }
+
+        let name = parts[0].trim().to_string();
+        let state = parts[1].trim().to_string();
+        let labels = parts[2];
+
+        let idle_mode = if !labels.contains("leandock.idle.enable=true") {
+            "Always-On".to_string()
+        } else if state.eq_ignore_ascii_case("running") {
+            "Wake Proxy: Active".to_string()
+        } else {
+            "Wake Proxy: Sleeping (0 MB)".to_string()
+        };
+
+        let (cpu, mem) = stats_map
+            .get(&name)
+            .cloned()
+            .unwrap_or_else(|| ("0.00%".to_string(), "0B / 0B".to_string()));
+
+        rows.push(LiveContainerStat {
+            name,
+            state,
+            cpu_percent: cpu,
+            mem_usage: mem,
+            idle_mode,
+        });
     }
 
-    rows
+    Ok(rows)
 }
 
 fn support_cell(support: CapabilitySupport) -> Cell {
@@ -568,4 +604,133 @@ fn support_cell(support: CapabilitySupport) -> Cell {
         CapabilitySupport::Partial => Cell::new("Partial").fg(Color::Yellow),
         CapabilitySupport::Skipped => Cell::new("Auto-Skipped").fg(Color::DarkGrey),
     }
+}
+
+// JSON output for `leandock analyze`.
+pub fn format_analyze_json_report(
+    profile: &HostProfile,
+    plan: &OptimizationPlan,
+    host_preview: Option<&HostTuningReport>,
+) -> crate::error::Result<String> {
+    let mut plan_value = serde_json::to_value(plan)?;
+
+    // Do not expose database command arguments or credentials.
+    if let Some(services) = plan_value
+        .get_mut("services")
+        .and_then(serde_json::Value::as_array_mut)
+    {
+        for service in services {
+            if let Some(object) = service.as_object_mut() {
+                object.remove("tuned_command");
+            }
+        }
+    }
+
+    let mut report = serde_json::Map::new();
+    report.insert("host".to_string(), serde_json::to_value(profile)?);
+    report.insert("optimization_plan".to_string(), plan_value);
+    report.insert(
+        "host_preview".to_string(),
+        serde_json::to_value(host_preview)?,
+    );
+
+    Ok(serde_json::to_string_pretty(&serde_json::Value::Object(
+        report,
+    ))?)
+}
+
+fn parse_cpu_percent(value: &str) -> Option<f64> {
+    value.trim().strip_suffix('%')?.trim().parse().ok()
+}
+
+fn parse_memory_value_bytes(value: &str) -> Option<u64> {
+    let value = value.trim();
+
+    let number_end = value.find(|c: char| !c.is_ascii_digit() && c != '.')?;
+
+    let number: f64 = value[..number_end].parse().ok()?;
+    let unit = value[number_end..].trim();
+
+    if !number.is_finite() || number < 0.0 {
+        return None;
+    }
+
+    let multiplier = match unit {
+        "B" => 1.0,
+        "kB" | "KB" => 1_000.0,
+        "MB" => 1_000_000.0,
+        "GB" => 1_000_000_000.0,
+        "TB" => 1_000_000_000_000.0,
+        "KiB" => 1_024.0,
+        "MiB" => 1_048_576.0,
+        "GiB" => 1_073_741_824.0,
+        "TiB" => 1_099_511_627_776.0,
+        _ => return None,
+    };
+
+    let bytes = number * multiplier;
+
+    if !bytes.is_finite() || bytes > u64::MAX as f64 {
+        return None;
+    }
+
+    Some(bytes.round() as u64)
+}
+
+fn parse_memory_usage(value: &str) -> (Option<u64>, Option<u64>) {
+    match value.split_once('/') {
+        Some((usage, limit)) => (
+            parse_memory_value_bytes(usage),
+            parse_memory_value_bytes(limit),
+        ),
+        None => (parse_memory_value_bytes(value), None),
+    }
+}
+
+// JSON output for `leandock status`.
+pub fn format_status_json_report(
+    containers: &[LiveContainerStat],
+    kernel_stats: &KernelMemoryStats,
+) -> crate::error::Result<String> {
+    let mut container_values = serde_json::to_value(containers)?;
+
+    if let Some(items) = container_values.as_array_mut() {
+        for item in items {
+            let Some(object) = item.as_object_mut() else {
+                continue;
+            };
+
+            let cpu = object
+                .get("cpu_percent")
+                .and_then(serde_json::Value::as_str)
+                .and_then(parse_cpu_percent);
+
+            let (memory_usage, memory_limit) = object
+                .get("mem_usage")
+                .and_then(serde_json::Value::as_str)
+                .map(parse_memory_usage)
+                .unwrap_or((None, None));
+
+            object.insert("cpu_percent_value".to_string(), serde_json::to_value(cpu)?);
+            object.insert(
+                "memory_usage_bytes".to_string(),
+                serde_json::to_value(memory_usage)?,
+            );
+            object.insert(
+                "memory_limit_bytes".to_string(),
+                serde_json::to_value(memory_limit)?,
+            );
+        }
+    }
+
+    let mut report = serde_json::Map::new();
+    report.insert("containers".to_string(), container_values);
+    report.insert(
+        "kernel_memory".to_string(),
+        serde_json::to_value(kernel_stats)?,
+    );
+
+    Ok(serde_json::to_string_pretty(&serde_json::Value::Object(
+        report,
+    ))?)
 }

@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -22,8 +23,9 @@ use crate::prerun::write_override_file;
 use crate::profiler::{discover_compose_file, ComposeDriver, ContainerRuntimeKind, HostProfile};
 use crate::proxy::start_proxy_daemon;
 use crate::report::{
-    capture_benchmark_snapshot, collect_live_container_stats, format_benchmark_report,
-    print_analyze_report, print_doctor_report, print_status_report, OutputFormat,
+    capture_benchmark_snapshot, format_analyze_json_report, format_benchmark_report,
+    format_status_json_report, print_analyze_report, print_doctor_report, print_status_report,
+    try_collect_live_container_stats, OutputFormat,
 };
 
 #[derive(Debug, Parser)]
@@ -48,6 +50,13 @@ pub enum EngineArg {
 pub enum BenchFormatArg {
     Table,
     Markdown,
+    Json,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum ReportFormatArg {
+    #[value(name = "text", alias = "table")]
+    Table,
     Json,
 }
 
@@ -155,15 +164,70 @@ pub enum Commands {
 }
 
 /// Top-level async CLI dispatcher.
+fn extract_report_format_args(mut args: Vec<OsString>) -> (Vec<OsString>, ReportFormatArg) {
+    let is_report_command = args
+        .get(1)
+        .and_then(|arg| arg.to_str())
+        .is_some_and(|command| matches!(command, "analyze" | "status"));
+
+    if !is_report_command {
+        return (args, ReportFormatArg::Table);
+    }
+
+    let mut filtered = Vec::with_capacity(args.len());
+    filtered.push(args.remove(0));
+
+    let mut format = ReportFormatArg::Table;
+    let mut iter = args.into_iter();
+
+    while let Some(arg) = iter.next() {
+        if arg == OsStr::new("--format") {
+            let value = iter.next().unwrap_or_else(|| {
+                clap::Error::raw(
+                    clap::error::ErrorKind::MissingRequiredArgument,
+                    "Missing value for --format (expected text or json)",
+                )
+                .exit()
+            });
+
+            format = match value.to_str() {
+                Some("text" | "table") => ReportFormatArg::Table,
+                Some("json") => ReportFormatArg::Json,
+                _ => clap::Error::raw(
+                    clap::error::ErrorKind::InvalidValue,
+                    "Invalid --format value (expected text or json)",
+                )
+                .exit(),
+            };
+        } else if let Some(value) = arg.to_str().and_then(|s| s.strip_prefix("--format=")) {
+            format = match value {
+                "text" | "table" => ReportFormatArg::Table,
+                "json" => ReportFormatArg::Json,
+                _ => clap::Error::raw(
+                    clap::error::ErrorKind::InvalidValue,
+                    "Invalid --format value (expected text or json)",
+                )
+                .exit(),
+            };
+        } else {
+            filtered.push(arg);
+        }
+    }
+
+    (filtered, format)
+}
+
+/// Top-level async CLI dispatcher.
 pub async fn run() -> Result<()> {
-    let cli = Cli::parse();
+    let (args, report_format) = extract_report_format_args(std::env::args_os().collect());
+    let cli = Cli::parse_from(args);
     let cwd = std::env::current_dir()?;
 
     match cli.command {
         Commands::Analyze {
             file,
             ephemeral_cache,
-        } => cmd_analyze(&cwd, file.as_deref(), ephemeral_cache),
+        } => cmd_analyze(&cwd, file.as_deref(), ephemeral_cache, report_format),
         Commands::Up {
             file,
             engine,
@@ -206,7 +270,7 @@ pub async fn run() -> Result<()> {
             start_proxy_daemon(&profile, &cwd, &port_map).await
         }
         Commands::Quadlet { file, output } => cmd_quadlet(&cwd, file.as_deref(), &output),
-        Commands::Status => cmd_status(),
+        Commands::Status => cmd_status(report_format),
         Commands::Bench {
             file,
             format,
@@ -221,7 +285,12 @@ pub async fn run() -> Result<()> {
     }
 }
 
-fn cmd_analyze(cwd: &Path, file: Option<&Path>, ephemeral_cache: bool) -> Result<()> {
+fn cmd_analyze(
+    cwd: &Path,
+    file: Option<&Path>,
+    ephemeral_cache: bool,
+    format: ReportFormatArg,
+) -> Result<()> {
     let profile = HostProfile::detect();
     let compose_path = discover_compose_file(file, cwd)?;
     let compose = ParsedCompose::from_file(&compose_path)?;
@@ -242,7 +311,13 @@ fn cmd_analyze(cwd: &Path, file: Option<&Path>, ephemeral_cache: bool) -> Result
         .ok()
         .and_then(|mut s| apply_host_tuning(&profile, cwd, &mut s, true).ok());
 
-    print_analyze_report(&profile, &plan, host_preview.as_ref());
+    match format {
+        ReportFormatArg::Table => print_analyze_report(&profile, &plan, host_preview.as_ref()),
+        ReportFormatArg::Json => println!(
+            "{}",
+            format_analyze_json_report(&profile, &plan, host_preview.as_ref())?
+        ),
+    }
     Ok(())
 }
 
@@ -547,15 +622,20 @@ fn cmd_quadlet(cwd: &Path, file: Option<&Path>, output: &Path) -> Result<()> {
     }
 }
 
-fn cmd_status() -> Result<()> {
+fn cmd_status(format: ReportFormatArg) -> Result<()> {
     let profile = HostProfile::detect();
     let runtime_bin = match profile.runtime.active_runtime {
         ContainerRuntimeKind::Podman => "podman",
         _ => "docker",
     };
-    let containers = collect_live_container_stats(runtime_bin);
+    let containers = try_collect_live_container_stats(runtime_bin)?;
     let kernel_stats = read_kernel_memory_stats();
-    print_status_report(&containers, &kernel_stats);
+    match format {
+        ReportFormatArg::Table => print_status_report(&containers, &kernel_stats),
+        ReportFormatArg::Json => {
+            println!("{}", format_status_json_report(&containers, &kernel_stats)?)
+        }
+    }
     Ok(())
 }
 
@@ -750,5 +830,46 @@ WantedBy={}\n",
                 .yellow()
         );
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod report_format_cli_tests {
+    use super::*;
+
+    fn extract(args: &[&str]) -> (Vec<OsString>, ReportFormatArg) {
+        extract_report_format_args(args.iter().map(OsString::from).collect())
+    }
+
+    #[test]
+    fn parses_json_format() {
+        let (args, format) = extract(&["leandock", "analyze", "--format", "json"]);
+        assert!(matches!(format, ReportFormatArg::Json));
+        assert!(Cli::try_parse_from(args).is_ok());
+    }
+
+    #[test]
+    fn parses_text_and_table_formats() {
+        for value in ["text", "table"] {
+            let (args, format) = extract(&["leandock", "status", "--format", value]);
+            assert!(matches!(format, ReportFormatArg::Table));
+            assert!(Cli::try_parse_from(args).is_ok());
+        }
+    }
+
+    #[test]
+    fn defaults_to_text_format() {
+        let (args, format) = extract(&["leandock", "analyze"]);
+        assert!(matches!(format, ReportFormatArg::Table));
+        assert!(Cli::try_parse_from(args).is_ok());
+    }
+
+    #[test]
+    fn preserves_public_commands_api() {
+        let analyze = Cli::try_parse_from(["leandock", "analyze"]).unwrap();
+        let status = Cli::try_parse_from(["leandock", "status"]).unwrap();
+
+        assert!(matches!(analyze.command, Commands::Analyze { .. }));
+        assert!(matches!(status.command, Commands::Status));
     }
 }
